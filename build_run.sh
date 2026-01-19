@@ -19,6 +19,6 @@ echo "Build and installation of guacd with Xorg support completed."
 
 # guacd -f -L debug -b 0.0.0.0 -p 4822
 cp guacd.conf.sample /etc/guacamole/guacd.conf
-guacd -f -L debug -b
+guacd -f -L debug
 
 echo "guacd with Xorg support started."
