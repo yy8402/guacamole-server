@@ -39,7 +39,8 @@ DIST_SUBDIRS =               \
     src/protocols/rdp        \
     src/protocols/ssh        \
     src/protocols/telnet     \
-    src/protocols/vnc
+    src/protocols/vnc        \
+    src/protocols/xorg
 
 SUBDIRS =        \
     src/libguac  \
@@ -77,6 +78,10 @@ if ENABLE_VNC
 SUBDIRS += src/protocols/vnc
 endif
 
+if ENABLE_XORG_CLIENT
+SUBDIRS += src/protocols/xorg
+endif
+
 if ENABLE_GUACD
 SUBDIRS += src/guacd
 endif
@@ -100,4 +105,3 @@ EXTRA_DIST =                         \
     doc/libguac-terminal/Doxyfile.in \
     src/guacd-docker                 \
     util/generate-test-runner.pl
-

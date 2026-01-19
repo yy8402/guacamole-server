@@ -27,7 +27,6 @@
 
 #include <guacamole/client.h>
 #include <guacamole/error.h>
-#include <guacamole/mem.h>
 #include <guacamole/parser.h>
 #include <guacamole/plugin.h>
 #include <guacamole/protocol.h>
@@ -45,6 +44,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <unistd.h>
+
+#define GUACD_XORG_CONFIG_PATH "/etc/guacamole/xorg.conf"
 
 /**
  * Behaves exactly as write(), but writes as much as possible, returning
@@ -68,14 +70,13 @@
 static int __write_all(int fd, char* buffer, int length) {
 
     /* Repeatedly write() until all data is written */
-    int remaining_length = length;
-    while (remaining_length > 0) {
+    while (length > 0) {
 
-        int written = write(fd, buffer, remaining_length);
+        int written = write(fd, buffer, length);
         if (written < 0)
             return -1;
 
-        remaining_length -= written;
+        length -= written;
         buffer += written;
 
     }
@@ -152,7 +153,7 @@ void* guacd_connection_io_thread(void* data) {
     /* Clean up */
     guac_socket_free(params->socket);
     close(params->fd);
-    guac_mem_free(params);
+    free(params);
 
     return NULL;
 
@@ -203,7 +204,7 @@ static int guacd_add_user(guacd_proc* proc, guac_parser* parser, guac_socket* so
     /* Close our end of the process file descriptor */
     close(proc_fd);
 
-    guacd_connection_io_thread_params* params = guac_mem_alloc(sizeof(guacd_connection_io_thread_params));
+    guacd_connection_io_thread_params* params = malloc(sizeof(guacd_connection_io_thread_params));
     params->parser = parser;
     params->socket = socket;
     params->fd = user_fd;
@@ -273,6 +274,7 @@ static int guacd_route_connection(guacd_proc_map* map, guac_socket* socket) {
     int new_process;
 
     const char* identifier = parser->argv[0];
+    const char* protocol = identifier;
 
     /* If connection ID, retrieve existing process */
     if (identifier[0] == GUAC_CLIENT_ID_PREFIX) {
@@ -296,11 +298,19 @@ static int guacd_route_connection(guacd_proc_map* map, guac_socket* socket) {
     /* Otherwise, create new client */
     else {
 
+        if (access(GUACD_XORG_CONFIG_PATH, R_OK) == 0
+                && strcmp(identifier, "xorg") != 0) {
+            guacd_log(GUAC_LOG_INFO,
+                    "Overriding protocol \"%s\" with \"xorg\" because %s exists",
+                    identifier, GUACD_XORG_CONFIG_PATH);
+            protocol = "xorg";
+        }
+
         guacd_log(GUAC_LOG_INFO, "Creating new client for protocol \"%s\"",
-                identifier);
+                protocol);
 
         /* Create new process */
-        proc = guacd_create_proc(identifier);
+        proc = guacd_create_proc(protocol);
         new_process = 1;
 
     }
@@ -354,7 +364,7 @@ static int guacd_route_connection(guacd_proc_map* map, guac_socket* socket) {
 
         /* Clean up */
         close(proc->fd_socket);
-        guac_mem_free(proc);
+        free(proc);
 
     }
 
@@ -382,7 +392,7 @@ void* guacd_connection_thread(void* data) {
         if (socket == NULL) {
             guacd_log_guac_error(GUAC_LOG_ERROR, "Unable to set up SSL/TLS");
             close(connected_socket_fd);
-            guac_mem_free(params);
+            free(params);
             return NULL;
         }
     }
@@ -398,8 +408,7 @@ void* guacd_connection_thread(void* data) {
     if (guacd_route_connection(map, socket))
         guac_socket_free(socket);
 
-    guac_mem_free(params);
+    free(params);
     return NULL;
 
 }
-

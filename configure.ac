@@ -559,6 +559,30 @@ AM_CONDITIONAL([ENABLE_VNC], [test "x${have_libvncserver}" = "xyes"])
 AC_SUBST(VNC_LIBS)
 
 #
+# Xorg protocol client
+#
+
+have_xorg_client=disabled
+XORG_CLIENT_CFLAGS=
+XORG_CLIENT_LIBS=
+AC_ARG_WITH([xorg-client],
+            [AS_HELP_STRING([--with-xorg-client],
+                            [support Xorg capture client @<:@default=check@:>@])],
+            [],
+            [with_xorg_client=check])
+
+if test "x$with_xorg_client" != "xno"
+then
+    have_xorg_client=yes
+    PKG_CHECK_MODULES([XORG_CLIENT], [x11 xtst],
+                      [], [have_xorg_client=no])
+fi
+
+AM_CONDITIONAL([ENABLE_XORG_CLIENT], [test "x${have_xorg_client}" = "xyes"])
+AC_SUBST([XORG_CLIENT_CFLAGS])
+AC_SUBST([XORG_CLIENT_LIBS])
+
+#
 # Repeater support within libVNCServer
 #
 
@@ -1464,7 +1488,8 @@ AC_CONFIG_FILES([Makefile
                  src/protocols/rdp/tests/Makefile
                  src/protocols/ssh/Makefile
                  src/protocols/telnet/Makefile
-                 src/protocols/vnc/Makefile])
+                 src/protocols/vnc/Makefile
+                 src/protocols/xorg/Makefile])
 AC_OUTPUT
 
 #
@@ -1476,6 +1501,7 @@ AM_COND_IF([ENABLE_RDP],        [build_rdp=yes],        [build_rdp=no])
 AM_COND_IF([ENABLE_SSH],        [build_ssh=yes],        [build_ssh=no])
 AM_COND_IF([ENABLE_TELNET],     [build_telnet=yes],     [build_telnet=no])
 AM_COND_IF([ENABLE_VNC],        [build_vnc=yes],        [build_vnc=no])
+AM_COND_IF([ENABLE_XORG_CLIENT],[build_xorg_client=yes],[build_xorg_client=no])
 
 #
 # Service / tool build status
@@ -1523,8 +1549,9 @@ $PACKAGE_NAME version $PACKAGE_VERSION
      libssh2 ............. ${have_libssh2}
      libssl .............. ${have_ssl}
      libswscale .......... ${have_libswscale}
-     libtelnet ........... ${have_libtelnet}
-     libVNCServer ........ ${have_libvncserver}
+    libtelnet ........... ${have_libtelnet}
+    libVNCServer ........ ${have_libvncserver}
+    libX11 .............. ${have_xorg_client}
      libvorbis ........... ${have_vorbis}
      libpulse ............ ${have_pulse}
      libwebsockets ....... ${have_libwebsockets}
@@ -1538,6 +1565,7 @@ $PACKAGE_NAME version $PACKAGE_VERSION
       SSH ........... ${build_ssh}
       Telnet ........ ${build_telnet}
       VNC ........... ${build_vnc}
+      Xorg ......... ${build_xorg_client}
 
    Services / tools:
 

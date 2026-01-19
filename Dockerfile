@@ -175,6 +175,9 @@ RUN apk add --no-cache                \
         libjpeg-turbo-dev             \
         libpng-dev                    \
         libtool                       \
+        libx11-dev                    \
+        libxext-dev                   \
+        libxtst-dev                   \
         libwebp-dev                   \
         make                          \
         openssl1.1-compat-dev         \
