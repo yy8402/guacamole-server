@@ -176,7 +176,9 @@ RUN apk add --no-cache                \
         libpng-dev                    \
         libtool                       \
         libx11-dev                    \
+        libxdamage-dev               \
         libxext-dev                   \
+        libxfixes-dev                \
         libxtst-dev                   \
         libwebp-dev                   \
         make                          \

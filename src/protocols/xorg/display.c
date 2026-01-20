@@ -20,6 +20,9 @@
 #include "config.h"
 
 #include "display.h"
+#include "capture.h"
+#include "cursor.h"
+#include "scale.h"
 
 #include <guacamole/client.h>
 #include <guacamole/display.h>
@@ -27,10 +30,69 @@
 #include <guacamole/socket.h>
 
 #include <X11/Xutil.h>
+#include <X11/extensions/XTest.h>
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+
+static void guac_xorg_free_maps(guac_xorg_client* xorg_client) {
+    free(xorg_client->x_map);
+    free(xorg_client->y_map);
+    xorg_client->x_map = NULL;
+    xorg_client->y_map = NULL;
+    xorg_client->map_output_width = 0;
+    xorg_client->map_output_height = 0;
+    xorg_client->map_capture_width = 0;
+    xorg_client->map_capture_height = 0;
+}
+
+static void guac_xorg_update_maps(guac_xorg_client* xorg_client) {
+    int output_width = xorg_client->width;
+    int output_height = xorg_client->height;
+    int capture_width = xorg_client->capture_width;
+    int capture_height = xorg_client->capture_height;
+
+    if (output_width <= 0 || output_height <= 0
+            || capture_width <= 0 || capture_height <= 0) {
+        guac_xorg_free_maps(xorg_client);
+        return;
+    }
+
+    if (xorg_client->map_output_width == output_width
+            && xorg_client->map_output_height == output_height
+            && xorg_client->map_capture_width == capture_width
+            && xorg_client->map_capture_height == capture_height)
+        return;
+
+    guac_xorg_free_maps(xorg_client);
+
+    xorg_client->x_map = calloc(output_width, sizeof(int));
+    xorg_client->y_map = calloc(output_height, sizeof(int));
+    if (xorg_client->x_map == NULL || xorg_client->y_map == NULL) {
+        guac_xorg_free_maps(xorg_client);
+        return;
+    }
+
+    for (int x = 0; x < output_width; x++) {
+        int src_x = (int) (((long long) x * capture_width) / output_width);
+        if (src_x >= capture_width)
+            src_x = capture_width - 1;
+        xorg_client->x_map[x] = src_x;
+    }
+
+    for (int y = 0; y < output_height; y++) {
+        int src_y = (int) (((long long) y * capture_height) / output_height);
+        if (src_y >= capture_height)
+            src_y = capture_height - 1;
+        xorg_client->y_map[y] = src_y;
+    }
+
+    xorg_client->map_output_width = output_width;
+    xorg_client->map_output_height = output_height;
+    xorg_client->map_capture_width = capture_width;
+    xorg_client->map_capture_height = capture_height;
+}
 
 static int guac_xorg_mask_shift(unsigned long mask) {
     int shift = 0;
@@ -75,83 +137,263 @@ static int guac_xorg_prepare_format(guac_xorg_client* xorg_client,
     return 1;
 }
 
-static void guac_xorg_draw_image(guac_xorg_client* xorg_client,
-        XImage* image) {
+static void guac_xorg_update_dimensions(guac_xorg_client* xorg_client,
+        const XWindowAttributes* attrs) {
 
-    guac_display_layer* default_layer =
-        guac_display_default_layer(xorg_client->display);
-    guac_display_layer_raw_context* context =
-        guac_display_layer_open_raw(default_layer);
+    xorg_client->capture_width = attrs->width;
+    xorg_client->capture_height = attrs->height;
 
-    int x;
-    int y;
+    if (xorg_client->settings->width == 0)
+        xorg_client->width = attrs->width;
+    if (xorg_client->settings->height == 0)
+        xorg_client->height = attrs->height;
+}
 
-    for (y = 0; y < xorg_client->height; y++) {
-        uint32_t* buffer_current =
-            (uint32_t*) (context->buffer + (context->stride * y));
+static void guac_xorg_union_damage(guac_xorg_client* xorg_client,
+        const guac_rect* rect) {
 
-        for (x = 0; x < xorg_client->width; x++) {
-            unsigned long pixel = XGetPixel(image, x, y);
-
-            unsigned long red = (pixel & xorg_client->red_mask)
-                    >> xorg_client->red_shift;
-            unsigned long green = (pixel & xorg_client->green_mask)
-                    >> xorg_client->green_shift;
-            unsigned long blue = (pixel & xorg_client->blue_mask)
-                    >> xorg_client->blue_shift;
-
-            red = (red * 255) / xorg_client->red_max;
-            green = (green * 255) / xorg_client->green_max;
-            blue = (blue * 255) / xorg_client->blue_max;
-
-            *(buffer_current++) = (red << 16) | (green << 8) | blue;
-        }
+    if (!xorg_client->damage_pending) {
+        xorg_client->damage_rect = *rect;
+        xorg_client->damage_pending = 1;
+        clock_gettime(CLOCK_MONOTONIC, &xorg_client->last_damage_time);
+        return;
     }
 
-    guac_rect full_rect;
-    guac_rect_init(&full_rect, 0, 0, xorg_client->width, xorg_client->height);
-    guac_rect_extend(&context->dirty, &full_rect);
-
-    guac_display_layer_close_raw(default_layer, context);
+    guac_rect_extend(&xorg_client->damage_rect, rect);
 }
+
+static void guac_xorg_map_damage(const guac_xorg_client* xorg_client,
+        const guac_rect* src_rect, guac_rect* dst_rect) {
+
+    int capture_width = xorg_client->capture_width;
+    int capture_height = xorg_client->capture_height;
+    int output_width = xorg_client->width;
+    int output_height = xorg_client->height;
+
+    int dst_left = (int) (((long long) src_rect->left * output_width)
+            / capture_width);
+    int dst_top = (int) (((long long) src_rect->top * output_height)
+            / capture_height);
+    int dst_right = (int) (((long long) src_rect->right * output_width)
+            / capture_width);
+    int dst_bottom = (int) (((long long) src_rect->bottom * output_height)
+            / capture_height);
+
+    if (dst_right <= dst_left)
+        dst_right = dst_left + 1;
+    if (dst_bottom <= dst_top)
+        dst_bottom = dst_top + 1;
+
+    dst_rect->left = dst_left;
+    dst_rect->top = dst_top;
+    dst_rect->right = dst_right;
+    dst_rect->bottom = dst_bottom;
+}
+
+#define GUAC_XORG_DAMAGE_COALESCE_US 12000
 
 void* guac_xorg_display_thread(void* arg) {
 
     guac_client* client = (guac_client*) arg;
     guac_xorg_client* xorg_client = (guac_xorg_client*) client->data;
 
-    int frame_delay_us = 1000000 / xorg_client->settings->fps;
+    int fps = xorg_client->settings->fps > 0
+        ? xorg_client->settings->fps
+        : 15;
+    int frame_delay_us = 1000000 / fps;
     struct timespec delay;
     delay.tv_sec = frame_delay_us / 1000000;
     delay.tv_nsec = (frame_delay_us % 1000000) * 1000;
+    struct timespec last_frame = { 0, 0 };
+
+    xorg_client->damage_pending = 1;
+    guac_rect_init(&xorg_client->damage_rect, 0, 0,
+            xorg_client->capture_width, xorg_client->capture_height);
 
     while (client->state == GUAC_CLIENT_RUNNING && !xorg_client->stop) {
 
-        XImage* image = XGetImage(xorg_client->x_display,
-                xorg_client->root_window, 0, 0, xorg_client->width,
-                xorg_client->height, AllPlanes, ZPixmap);
+        XLockDisplay(xorg_client->x_display);
 
-        if (image == NULL) {
+        XEvent event;
+        while (XPending(xorg_client->x_display)) {
+            XNextEvent(xorg_client->x_display, &event);
+            if (xorg_client->capture.damage_available
+                    && event.type == xorg_client->capture.damage_event_base
+                    + XDamageNotify) {
+                XDamageNotifyEvent* damage =
+                    (XDamageNotifyEvent*) &event;
+                guac_rect rect;
+                guac_rect_init(&rect, damage->area.x, damage->area.y,
+                        damage->area.width, damage->area.height);
+                guac_xorg_union_damage(xorg_client, &rect);
+            }
+            guac_xorg_cursor_handle_event(xorg_client, &event);
+        }
+
+        int prev_capture_width = xorg_client->capture_width;
+        int prev_capture_height = xorg_client->capture_height;
+        XWindowAttributes attrs;
+        if (XGetWindowAttributes(xorg_client->x_display,
+                    xorg_client->root_window, &attrs)) {
+            guac_xorg_update_dimensions(xorg_client, &attrs);
+        }
+        XUnlockDisplay(xorg_client->x_display);
+
+        if (xorg_client->capture_width != prev_capture_width
+                || xorg_client->capture_height != prev_capture_height) {
+            guac_rect full;
+            guac_rect_init(&full, 0, 0,
+                    xorg_client->capture_width,
+                    xorg_client->capture_height);
+            xorg_client->damage_rect = full;
+            xorg_client->damage_pending = 1;
+        }
+
+        if (!xorg_client->damage_pending
+                && xorg_client->capture.damage_available) {
             nanosleep(&delay, NULL);
             continue;
         }
 
+        if (xorg_client->damage_pending
+                && xorg_client->capture.damage_available) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long long since_damage_us =
+                (now.tv_sec - xorg_client->last_damage_time.tv_sec) * 1000000LL
+                + (now.tv_nsec - xorg_client->last_damage_time.tv_nsec) / 1000;
+            if (since_damage_us < GUAC_XORG_DAMAGE_COALESCE_US) {
+                struct timespec remaining = {
+                    .tv_sec = 0,
+                    .tv_nsec = (GUAC_XORG_DAMAGE_COALESCE_US - since_damage_us)
+                        * 1000
+                };
+                nanosleep(&remaining, NULL);
+                continue;
+            }
+        }
+
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long elapsed_us = (now.tv_sec - last_frame.tv_sec) * 1000000LL
+            + (now.tv_nsec - last_frame.tv_nsec) / 1000;
+        if (elapsed_us < frame_delay_us) {
+            struct timespec remaining = {
+                .tv_sec = 0,
+                .tv_nsec = (frame_delay_us - elapsed_us) * 1000
+            };
+            nanosleep(&remaining, NULL);
+            continue;
+        }
+
+        if (xorg_client->width <= 0 || xorg_client->height <= 0
+                || xorg_client->capture_width <= 0
+                || xorg_client->capture_height <= 0) {
+            nanosleep(&delay, NULL);
+            continue;
+        }
+
+        guac_display_layer* default_layer =
+            guac_display_default_layer(xorg_client->display);
+        guac_rect bounds;
+        guac_display_layer_get_bounds(default_layer, &bounds);
+        int current_width = bounds.right - bounds.left;
+        int current_height = bounds.bottom - bounds.top;
+        if (current_width != xorg_client->width
+                || current_height != xorg_client->height) {
+            guac_display_layer_resize(default_layer,
+                    xorg_client->width, xorg_client->height);
+        }
+        guac_xorg_update_maps(xorg_client);
+
+        guac_rect src_rect = xorg_client->damage_pending
+            ? xorg_client->damage_rect
+            : (guac_rect) {
+                .left = 0,
+                .top = 0,
+                .right = xorg_client->capture_width,
+                .bottom = xorg_client->capture_height
+            };
+
+        if (src_rect.left < 0)
+            src_rect.left = 0;
+        if (src_rect.top < 0)
+            src_rect.top = 0;
+        if (src_rect.right > xorg_client->capture_width)
+            src_rect.right = xorg_client->capture_width;
+        if (src_rect.bottom > xorg_client->capture_height)
+            src_rect.bottom = xorg_client->capture_height;
+
+        if (src_rect.right <= src_rect.left
+                || src_rect.bottom <= src_rect.top) {
+            xorg_client->damage_pending = 0;
+            nanosleep(&delay, NULL);
+            continue;
+        }
+
+        guac_rect dst_rect;
+        guac_xorg_map_damage(xorg_client, &src_rect, &dst_rect);
+
+        if (dst_rect.left < 0)
+            dst_rect.left = 0;
+        if (dst_rect.top < 0)
+            dst_rect.top = 0;
+        if (dst_rect.right > xorg_client->width)
+            dst_rect.right = xorg_client->width;
+        if (dst_rect.bottom > xorg_client->height)
+            dst_rect.bottom = xorg_client->height;
+
+        if (dst_rect.right <= dst_rect.left
+                || dst_rect.bottom <= dst_rect.top) {
+            xorg_client->damage_pending = 0;
+            nanosleep(&delay, NULL);
+            continue;
+        }
+
+        XLockDisplay(xorg_client->x_display);
+        if (xorg_client->capture.damage_available) {
+            XDamageSubtract(xorg_client->x_display,
+                    xorg_client->capture.damage, None, None);
+        }
+        XUnlockDisplay(xorg_client->x_display);
+
+        XImage* image = NULL;
+        int image_owned = 0;
+
+        XLockDisplay(xorg_client->x_display);
+        if (guac_xorg_capture_image(xorg_client, &src_rect,
+                    &image, &image_owned) != 0) {
+            XUnlockDisplay(xorg_client->x_display);
+            nanosleep(&delay, NULL);
+            continue;
+        }
+        XUnlockDisplay(xorg_client->x_display);
+
         if (xorg_client->red_max == 0 && !guac_xorg_prepare_format(
                     xorg_client, image)) {
-            XDestroyImage(image);
+            if (image_owned)
+                XDestroyImage(image);
             guac_client_log(client, GUAC_LOG_ERROR,
                     "Unsupported XImage format.");
             guac_client_stop(client);
             break;
         }
 
-        guac_xorg_draw_image(xorg_client, image);
-        XDestroyImage(image);
+        guac_display_layer_raw_context* context =
+            guac_display_layer_open_raw(default_layer);
+        guac_xorg_scale_image(xorg_client, image, &src_rect, &dst_rect, context);
+        guac_display_layer_close_raw(default_layer, context);
+
+        if (image_owned)
+            XDestroyImage(image);
+
+        last_frame = now;
+        guac_xorg_cursor_update(xorg_client);
 
         guac_display_end_frame(xorg_client->display);
         guac_socket_flush(client->socket);
 
-        nanosleep(&delay, NULL);
+        xorg_client->damage_pending = 0;
     }
 
     return NULL;
@@ -195,6 +437,22 @@ int guac_xorg_display_init(guac_client* client, guac_xorg_client* xorg_client) {
         ? xorg_client->settings->height
         : attrs.height;
 
+    xorg_client->capture_width = attrs.width;
+    xorg_client->capture_height = attrs.height;
+
+    int xtest_event_base = 0;
+    int xtest_error_base = 0;
+    int xtest_major = 0;
+    int xtest_minor = 0;
+    xorg_client->xtest_available = XTestQueryExtension(xorg_client->x_display,
+            &xtest_event_base, &xtest_error_base, &xtest_major, &xtest_minor);
+    if (!xorg_client->xtest_available)
+        guac_client_log(client, GUAC_LOG_WARNING,
+                "XTest extension unavailable; input will be disabled.");
+
+    guac_xorg_capture_init(client, xorg_client);
+    guac_xorg_cursor_init(client, xorg_client);
+
     xorg_client->display = guac_display_alloc(client);
     if (xorg_client->display == NULL) {
         guac_client_log(client, GUAC_LOG_ERROR,
@@ -234,6 +492,8 @@ void guac_xorg_display_free(guac_xorg_client* xorg_client) {
         xorg_client->display_thread_running = 0;
     }
 
+    guac_xorg_capture_free(xorg_client);
+
     if (xorg_client->display != NULL) {
         guac_display_free(xorg_client->display);
         xorg_client->display = NULL;
@@ -243,6 +503,8 @@ void guac_xorg_display_free(guac_xorg_client* xorg_client) {
         XCloseDisplay(xorg_client->x_display);
         xorg_client->x_display = NULL;
     }
+
+    guac_xorg_free_maps(xorg_client);
 
     guac_xorg_settings_free(xorg_client->settings);
     xorg_client->settings = NULL;

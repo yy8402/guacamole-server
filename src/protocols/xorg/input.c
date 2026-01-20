@@ -44,13 +44,37 @@ int guac_xorg_user_mouse_handler(guac_user* user, int x, int y, int mask) {
     guac_xorg_client* xorg_client = (guac_xorg_client*) user->client->data;
     if (xorg_client == NULL || xorg_client->x_display == NULL)
         return 0;
+    if (!xorg_client->xtest_available)
+        return 0;
+
+    int capture_width = xorg_client->capture_width;
+    int capture_height = xorg_client->capture_height;
+    int output_width = xorg_client->width;
+    int output_height = xorg_client->height;
+    if (capture_width <= 0 || capture_height <= 0
+            || output_width <= 0 || output_height <= 0)
+        return 0;
+
+    int target_x = (int) (((long long) x * capture_width) / output_width);
+    int target_y = (int) (((long long) y * capture_height) / output_height);
+
+    if (target_x < 0)
+        target_x = 0;
+    else if (target_x >= capture_width)
+        target_x = capture_width - 1;
+
+    if (target_y < 0)
+        target_y = 0;
+    else if (target_y >= capture_height)
+        target_y = capture_height - 1;
 
     guac_xorg_input_state* state = guac_xorg_get_input_state(user);
     int last_mask = state->last_mask;
 
     XLockDisplay(xorg_client->x_display);
 
-    XTestFakeMotionEvent(xorg_client->x_display, -1, x, y, CurrentTime);
+    XTestFakeMotionEvent(xorg_client->x_display, -1,
+            target_x, target_y, CurrentTime);
 
     int button_map[5] = { 1, 2, 3, 4, 5 };
     int mask_bits[5] = { 1, 2, 4, 8, 16 };
@@ -76,6 +100,8 @@ int guac_xorg_user_key_handler(guac_user* user, int keysym, int pressed) {
 
     guac_xorg_client* xorg_client = (guac_xorg_client*) user->client->data;
     if (xorg_client == NULL || xorg_client->x_display == NULL)
+        return 0;
+    if (!xorg_client->xtest_available)
         return 0;
 
     KeySym sym = (KeySym) keysym;

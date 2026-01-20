@@ -21,6 +21,10 @@
 #define GUAC_XORG_CLIENT_H
 
 #include "settings.h"
+#include "capture.h"
+#include "cursor.h"
+
+#include <guacamole/rect.h>
 
 #include <guacamole/client.h>
 #include <guacamole/display.h>
@@ -28,6 +32,7 @@
 #include <X11/Xlib.h>
 
 #include <pthread.h>
+#include <time.h>
 
 typedef struct guac_xorg_client {
 
@@ -40,6 +45,9 @@ typedef struct guac_xorg_client {
 
     int width;
     int height;
+    int capture_width;
+    int capture_height;
+    int xtest_available;
 
     unsigned long red_mask;
     unsigned long green_mask;
@@ -54,6 +62,19 @@ typedef struct guac_xorg_client {
     pthread_t display_thread;
     int display_thread_running;
     int stop;
+
+    guac_xorg_capture capture;
+    guac_xorg_cursor cursor;
+    guac_rect damage_rect;
+    int damage_pending;
+    struct timespec last_damage_time;
+
+    int* x_map;
+    int* y_map;
+    int map_output_width;
+    int map_output_height;
+    int map_capture_width;
+    int map_capture_height;
 
 } guac_xorg_client;
 

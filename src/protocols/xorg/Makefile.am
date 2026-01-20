@@ -29,17 +29,23 @@ ACLOCAL_AMFLAGS = -I m4
 lib_LTLIBRARIES = libguac-client-xorg.la
 
 libguac_client_xorg_la_SOURCES = \
+    capture.c                    \
     client.c                     \
+    cursor.c                     \
     display.c                    \
     input.c                      \
+    scale.c                      \
     settings.c                   \
     user.c                       \
     xorg.c
 
 noinst_HEADERS = \
+    capture.h    \
     client.h     \
+    cursor.h     \
     display.h    \
     input.h      \
+    scale.h      \
     settings.h   \
     user.h       \
     xorg.h

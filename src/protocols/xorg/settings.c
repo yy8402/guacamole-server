@@ -140,7 +140,7 @@ guac_xorg_settings* guac_xorg_parse_args(guac_user* user,
 
     settings->fps =
         guac_user_parse_args_int(user, GUAC_XORG_CLIENT_ARGS, argv,
-                IDX_FPS, 15);
+                IDX_FPS, 30);
 
     const char* env_display = getenv("GUAC_XORG_DISPLAY");
     const char* env_width = getenv("GUAC_XORG_WIDTH");
@@ -164,7 +164,7 @@ guac_xorg_settings* guac_xorg_parse_args(guac_user* user,
         guac_xorg_load_config(settings, config_path);
 
     if (settings->fps <= 0)
-        settings->fps = 15;
+        settings->fps = 30;
 
     return settings;
 

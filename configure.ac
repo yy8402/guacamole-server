@@ -574,7 +574,7 @@ AC_ARG_WITH([xorg-client],
 if test "x$with_xorg_client" != "xno"
 then
     have_xorg_client=yes
-    PKG_CHECK_MODULES([XORG_CLIENT], [x11 xtst],
+    PKG_CHECK_MODULES([XORG_CLIENT], [x11 xtst xfixes xdamage xext],
                       [], [have_xorg_client=no])
 fi
 
